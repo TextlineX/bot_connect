@@ -29,7 +29,7 @@ Bot Connect 是一个实时机器人控制与通信平台，采用 **主从（Ma
            ▼                                 ▼
       ROS 2 / AIMDK                    ROS 2 / AIMDK
       PlayTts Srv                      cmd_vel Topic
-                                       摄像头 → RTSP
+                                      摄像头 → MJPEG（HTTP）
 ```
 
 ## 角色说明

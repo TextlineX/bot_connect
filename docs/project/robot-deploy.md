@@ -39,6 +39,7 @@ export WS_URL=ws://<PC_IP>:8765
 export ROBOT_ROLE=slave
 export ROBOT_ID=slave-01
 export STREAM_AUTOSTART=1
+export STREAM_MODE=http_mjpeg      # 当前默认 MJPEG
 export STREAM_PUBLIC_HOST=<机器人IP>
 export STREAM_TOPIC=/aima/hal/sensor/stereo_head_front_right/rgb_image/compressed
 python robot/client.py
@@ -48,9 +49,7 @@ python robot/client.py
 
 | 协议 | 地址 |
 |------|------|
-| RTSP | `rtsp://<机器人IP>:8554/slave-01` |
-| HTTP | `http://<机器人IP>:8889/slave-01` |
-| WHEP | `http://<机器人IP>:8889/slave-01/whep` |
+| MJPEG | `http://<机器人IP>:8000/stream.mjpg` |
 
 ## 常用相机话题
 

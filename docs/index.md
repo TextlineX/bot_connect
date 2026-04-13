@@ -30,7 +30,7 @@ features:
     linkText: 了解 ASR/TTS
 
   - title: 视频推流
-    details: Slave 摄像头通过 RTSP → MediaMTX 推流，支持 WebRTC / HLS / MJPEG 多协议
+    details: Slave 摄像头通过 MJPEG HTTP 推流，浏览器直接播放 stream.mjpg
     link: /project/robot-deploy
     linkText: 配置视频流
 

@@ -39,5 +39,5 @@ ros2 topic list | grep cmd_vel
 ### 检查视频流
 
 ```bash
-ffplay rtsp://<机器人IP>:8554/slave-01
+ffplay http://<机器人IP>:8000/stream.mjpg
 ```
