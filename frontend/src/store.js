@@ -7,9 +7,18 @@ function cloneFeatureFlags(source = {}) {
   return { ...defaultFeatureConfig, ...(source || {}) }
 }
 
+function normalizeWsUrl(url) {
+  const value = String(url || '').trim()
+  if (!value) return ''
+  return value.replace(/^ws:\/\/0\.0\.0\.0(?::\d+)?/i, 'ws://127.0.0.1')
+}
+
 function defaultAppConfig() {
   return {
     version: 0,
+    network: {
+      robot_host: '192.168.88.88',
+    },
     frontend: {
       controller_robot_id: 'controller',
       role: 'controller',
@@ -56,6 +65,7 @@ const state = reactive({
   brainTargetRobot: 'master-01',
   controlTargetRobot: 'slave-01',
   targetRobot: 'master-01',
+  networkRobotHost: '192.168.88.88',
   connected: false,
   autoReconnect: true,
   ws: null,
@@ -64,6 +74,8 @@ const state = reactive({
   results: [],
   asr: [],
   audio: [],
+  vision: [],
+  visionLatest: {},
   online: {},
   robots: {},
   aiResults: [],
@@ -169,6 +181,9 @@ function normalizeAppConfig(raw) {
 function buildAppConfigPayload() {
   return {
     version: Number(state.configVersion || 0),
+    network: {
+      robot_host: state.networkRobotHost || '192.168.88.88',
+    },
     frontend: {
       controller_robot_id: state.robotId,
       role: state.role,
@@ -210,6 +225,7 @@ function buildAppConfigPayload() {
 function applyAppConfig(rawConfig, options = {}) {
   const { persist = false, source = 'local' } = options
   const next = normalizeAppConfig(rawConfig)
+  const network = next.network || {}
   const frontend = next.frontend || {}
   const targets = frontend.targets || {}
   const backend = next.backend || {}
@@ -220,9 +236,11 @@ function applyAppConfig(rawConfig, options = {}) {
   state.configVersion = Number(next.version || state.configVersion || 0)
   state.lastConfigSyncAt = Date.now()
 
+  state.networkRobotHost = network.robot_host || state.networkRobotHost || '192.168.88.88'
+
   if (frontend.controller_robot_id) state.robotId = frontend.controller_robot_id
   if (frontend.role) state.role = frontend.role
-  if (source !== 'remote' || frontend.ws_url) state.wsUrl = frontend.ws_url ?? state.wsUrl
+  if (source !== 'remote' || frontend.ws_url) state.wsUrl = normalizeWsUrl(frontend.ws_url ?? state.wsUrl)
   state.autoReconnect = frontend.auto_reconnect ?? state.autoReconnect
 
   state.brainTargetRobot = targets.brain_robot_id || master.robot_id || state.brainTargetRobot
@@ -387,7 +405,16 @@ function applyRemoteConfigMessage(data) {
 }
 
 function connect(urlOverride) {
-  const url = urlOverride || state.wsUrl
+  let url = urlOverride || state.wsUrl
+  if (!url && typeof window !== 'undefined' && window.electronAPI?.defaultWsUrl) {
+    url = String(window.electronAPI.defaultWsUrl || '').trim()
+    if (url) state.wsUrl = url
+  }
+  if (!url && typeof location !== 'undefined' && location.host) {
+    const scheme = location.protocol === 'https:' ? 'wss' : 'ws'
+    url = `${scheme}://${location.host}`
+    state.wsUrl = url
+  }
   if (!url) {
     pushLog({ type: 'error', dir: 'out', msg: '缺少 WS 地址' })
     return
@@ -496,6 +523,12 @@ function connect(urlOverride) {
       } else if (data.type === 'audio_saved' || data.type === 'audio_available') {
         state.audio.unshift({ ts: nowTs(), detail: data })
         if (state.audio.length > 200) state.audio.pop()
+      } else if (data.type === 'vision') {
+        state.vision.unshift({ ts: nowTs(), detail: data })
+        if (state.vision.length > 500) state.vision.pop()
+        const meta = data?.payload?.meta || {}
+        const key = `${meta.task || 'task'}|${meta.camera || 'cam'}`
+        state.visionLatest[key] = data
       } else if (data.type === 'master_config_ack') {
         pushLog({
           type: 'info',
@@ -563,7 +596,7 @@ const presets = computed(() => {
   const host = window.location.hostname || '127.0.0.1'
   return [
     { label: '本机回环', value: 'ws://127.0.0.1:8765' },
-    { label: '当前主机', value: `ws://${host}:8765` },
+    { label: '当前主机', value: `ws://${host === '0.0.0.0' ? '127.0.0.1' : host}:8765` },
     { label: 'WSL 宿主网关', value: 'ws://172.19.0.1:8765' },
   ]
 })
@@ -589,6 +622,19 @@ if (typeof window !== 'undefined') {
 }
 
 if (typeof window !== 'undefined') {
+  // 若用户未手动填写 WS 地址，则默认使用“当前页面同源 WS”或 Electron 注入的默认值，
+  // 以便其它设备直接访问 http://<PC_IP>:8765 后能自动连上 ws://<PC_IP>:8765。
+  if (!state.wsUrl) {
+    const injected = window.electronAPI?.defaultWsUrl
+    if (injected) {
+      state.wsUrl = normalizeWsUrl(injected)
+    } else if (location?.host) {
+      const scheme = location.protocol === 'https:' ? 'wss' : 'ws'
+      const host = location.hostname === '0.0.0.0' ? '127.0.0.1' : location.hostname
+      state.wsUrl = `${scheme}://${host}${location.port ? `:${location.port}` : ''}`
+    }
+  }
+
   window.addEventListener('load', () => {
     if (state.autoReconnect && state.wsUrl) {
       setTimeout(() => connect(), 300)

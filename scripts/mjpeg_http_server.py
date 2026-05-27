@@ -59,6 +59,10 @@ class MjpegHandler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Cache-Control", "no-cache, private")
         self.send_header("Pragma", "no-cache")
+        # 允许前端用 Canvas/MediaRecorder 做截图与录屏（跨域时依赖 CORS）
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "GET, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "*")
         self.send_header("Content-Type", "multipart/x-mixed-replace; boundary=frame")
         self.end_headers()
 
@@ -77,6 +81,13 @@ class MjpegHandler(BaseHTTPRequestHandler):
                 time.sleep(0.03)
         except (BrokenPipeError, ConnectionResetError):
             pass
+
+    def do_OPTIONS(self):
+        self.send_response(204)
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "GET, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "*")
+        self.end_headers()
 
 
 def main():

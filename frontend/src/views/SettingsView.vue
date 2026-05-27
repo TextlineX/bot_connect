@@ -12,6 +12,10 @@
           <label>WS 地址</label>
           <input v-model="state.wsUrl" placeholder="ws://127.0.0.1:8765" />
         </div>
+        <div class="field">
+          <label>机器人热点 IP（从机）</label>
+          <input v-model="state.networkRobotHost" placeholder="192.168.88.88" />
+        </div>
         <div class="field duo">
           <div>
             <label>本机 ID</label>
@@ -42,7 +46,10 @@
             <span class="knob"></span>
           </button>
         </div>
-        <div class="hint">控制/动作默认发给 slave，ASR/AI 默认发给 master。保存会写入后端 config.json 并同步主从。</div>
+        <div class="hint">
+          说明：该 IP 用于 `http://<PC_IP>:8765/proxy/robot?...` 视频/资源代理白名单。
+          控制/动作默认发给 slave，ASR/AI 默认发给 master。保存会写入后端 config.json 并同步主从。
+        </div>
         <button class="primary" @click="syncAllConfig">保存并同步全部配置</button>
       </div>
 

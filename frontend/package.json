@@ -3,21 +3,62 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
+  "main": "electron/main.cjs",
   "scripts": {
     "dev": "vite --host 0.0.0.0 --port 5173",
     "build": "vite build",
     "preview": "vite preview",
     "electron:dev": "electron electron/main.cjs",
-    "electron:build": "vite build && electron electron/main.cjs",
-    "electron:preview": "npm run build && electron electron/main.cjs"
+    "electron:preview": "npm run build && electron electron/main.cjs",
+    "electron:dist": "npm --prefix ../backend install --omit=dev && npm run build && electron-builder --win"
   },
   "dependencies": {
+    "dotenv": "^16.4.5",
     "vue": "^3.4.21",
-    "vue-router": "^4.6.4"
+    "vue-router": "^4.6.4",
+    "ws": "^8.17.0"
   },
   "devDependencies": {
     "@vitejs/plugin-vue": "^5.0.4",
     "electron": "^31.0.0",
+    "electron-builder": "^24.13.3",
     "vite": "^5.2.10"
+  },
+  "build": {
+    "appId": "com.botconnect.app",
+    "productName": "Bot Connect",
+    "directories": {
+      "output": "release"
+    },
+    "artifactName": "${productName}-${version}-${os}-${arch}.${ext}",
+    "files": [
+      "dist/**",
+      "electron/**",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "../backend",
+        "to": "backend"
+      },
+      {
+        "from": "dist",
+        "to": "frontend_dist"
+      }
+    ],
+    "win": {
+      "icon": "electron/assets/icon.ico",
+      "target": [
+        "nsis",
+        "portable"
+      ]
+    },
+    "portable": {
+      "artifactName": "${productName}-${version}-portable.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    }
   }
 }

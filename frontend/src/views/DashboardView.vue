@@ -249,7 +249,8 @@ const ONLINE_TTL = 7000
 
 const defaultWs = computed(() => {
   const host = window.location.hostname || '127.0.0.1'
-  return `ws://${host}:8765`
+  const safeHost = host === '0.0.0.0' ? '127.0.0.1' : host
+  return `ws://${safeHost}:8765`
 })
 
 const robots = computed(() => Object.values(state.robots || {}))

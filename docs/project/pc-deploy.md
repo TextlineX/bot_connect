@@ -8,7 +8,12 @@ npm install
 node server.js
 ```
 
-默认监听 `ws://0.0.0.0:8765`。
+默认监听 `ws://0.0.0.0:8765`（并在同端口提供 `http://0.0.0.0:8765/health`）。
+
+如果你已构建前端（`frontend/dist` 存在），后端也会在 **同一个端口** 托管前端页面：
+
+- 浏览器：`http://<PC_IP>:8765`
+- WebSocket：`ws://<PC_IP>:8765`
 
 **环境变量：**
 
@@ -20,6 +25,35 @@ node server.js
 | `MODEL_PATH` | — | Vosk 模型路径，开启本地 ASR |
 | `PYTHON_BIN` | `python` | Python 解释器路径 |
 | `FFMPEG_BIN` | `ffmpeg` | ffmpeg 路径 |
+| `ROBOT_HOST` | `192.168.88.88` | 机器人热点侧 IP（用于视频/资源代理） |
+| `MAX_PROXY_CONNECTIONS` | `20` | `/proxy/robot*` 最大并发连接数（避免被视频流拖垮） |
+
+## 机器人热点侧资源代理（解决双网问题）
+
+你的 PC 同时连接：
+
+- 正常局域网（其它设备在这里）
+- 机器人热点（`192.168.88.0/24`，机器人常见为 `192.168.88.88`，不上网）
+
+其它设备无法直连 `http://192.168.88.88:xxxx/...`。本项目后端提供同源代理：
+
+```text
+http://<PC_IP>:8765/proxy/robot?url=<ENCODED_TARGET_URL>
+```
+
+例：
+
+```text
+http://<PC_IP>:8765/proxy/robot?url=http%3A%2F%2F192.168.88.88%3A8000%2Fstream.mjpg
+```
+
+更安全的写法（不用传完整 URL）：
+
+```text
+http://<PC_IP>:8765/proxy/robot/mjpg?port=8000&path=/stream.mjpg
+```
+
+监控面板会自动把 `192.168.88.88` 的 MJPEG 地址改成走代理（方便其它设备直接打开 `http://<PC_IP>:8765` 看视频/截图/录屏）。
 
 ## 前端 (Vue + Vite)
 
@@ -49,8 +83,21 @@ npm run electron:dev
 ```
 
 - `electron:dev` — 开发模式
-- `electron:build` — 构建 + 运行
 - `electron:preview` — 预览已构建产物
+- `electron:dist` — 打包 Windows 安装包（NSIS，产物在 `frontend\release\`）
+
+### 打包 EXE（推荐）
+
+```powershell
+cd H:\Project\Bot\bot_connect\backend
+npm install
+
+cd H:\Project\Bot\bot_connect\frontend
+npm install
+npm run electron:dist
+```
+
+打包后的程序启动后会自动拉起后端，并加载 `http://127.0.0.1:8765/`；同一局域网的其他设备也能访问 `http://<PC_IP>:8765/`（记得放行防火墙端口）。
 
 ## 防火墙
 

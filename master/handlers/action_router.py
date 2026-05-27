@@ -4,6 +4,7 @@ import time
 
 from .base import MasterModule
 from action_presets import ACTION_ALIASES, PRESET_DEFS, canonical_action, resolve_preset
+from motion_presets import resolve_motion_command, resolve_motion_preset_name
 
 
 class ActionRouterModule(MasterModule):
@@ -79,9 +80,40 @@ class ActionRouterModule(MasterModule):
         if canonical == "motion.move":
             if not self.context.motion_module:
                 return self._result(False, canonical, "motion module unavailable", handled=True)
-            linear, angular = self._resolve_motion_payload(action, payload)
-            duration = self._to_float(payload.get("duration"), 0)
-            result = await self.context.motion_module.execute_move(linear, angular)
+
+            preset_from_action = resolve_motion_preset_name(action)
+            if preset_from_action and not any(k in payload for k in ("motion_preset", "preset", "macro", "pattern")):
+                payload = {**payload, "preset": preset_from_action}
+
+            use_rich_payload = bool(preset_from_action) or any(
+                key in payload
+                for key in (
+                    "motion_preset",
+                    "preset",
+                    "macro",
+                    "pattern",
+                    "duration",
+                    "duration_sec",
+                    "distance",
+                    "distance_m",
+                    "angle_deg",
+                    "angle_rad",
+                    "repeat",
+                    "times",
+                )
+            )
+            if use_rich_payload:
+                cmd = resolve_motion_command(payload)
+                linear = cmd.get("linear", 0.0)
+                lateral = cmd.get("lateral", 0.0)
+                angular = cmd.get("angular", 0.0)
+                duration = float(cmd.get("duration") or 0.0)
+            else:
+                linear, angular = self._resolve_motion_payload(action, payload)
+                lateral = self._to_float(payload.get("lateral"), 0.0)
+                duration = self._to_float(payload.get("duration"), 0)
+
+            result = await self.context.motion_module.execute_move(linear, angular, lateral=lateral)
             if duration > 0:
                 if self._stop_task:
                     self._stop_task.cancel()

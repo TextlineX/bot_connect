@@ -6,7 +6,7 @@
         v-for="p in streamInfo.presets"
         :key="p.url"
         class="preset-btn"
-        @click="$emit('update:url', p.url)"
+        @click="$emit('update:url', proxyRobotUrl(p.url))"
       >
         {{ p.label || p.topic || p.url }}
       </button>
@@ -29,6 +29,7 @@
 
 <script setup>
 import { computed } from 'vue'
+import { useStore } from '../store'
 import WebRtcPlayer from './WebRtcPlayer.vue'
 
 const props = defineProps({
@@ -39,7 +40,26 @@ const props = defineProps({
 })
 const emit = defineEmits(['update:url'])
 
-const effectiveUrl = computed(() => (props.url || props.autoUrl || '').trim())
+const { state } = useStore()
+
+function proxyRobotUrl(rawUrl) {
+  const input = String(rawUrl || '').trim()
+  if (!input) return ''
+  try {
+    const u = new URL(input)
+    const robotHost = String(state.networkRobotHost || '192.168.88.88').trim() || '192.168.88.88'
+    if ((u.protocol === 'http:' || u.protocol === 'https:') && u.hostname === robotHost) {
+      const origin = typeof location !== 'undefined' && location.origin ? location.origin : ''
+      const prefix = origin || ''
+      return `${prefix}/proxy/robot?url=${encodeURIComponent(input)}`
+    }
+  } catch {
+    // ignore
+  }
+  return input
+}
+
+const effectiveUrl = computed(() => proxyRobotUrl((props.url || props.autoUrl || '').trim()))
 const isWebRtc = computed(() => effectiveUrl.value.toLowerCase().startsWith('http') && effectiveUrl.value.toLowerCase().includes('/whep'))
 const isVideo = computed(() => {
   const u = effectiveUrl.value.toLowerCase()
@@ -49,7 +69,7 @@ const isMjpg = computed(() => effectiveUrl.value.toLowerCase().includes('mjpg') 
 const usingAuto = computed(() => !props.url && !!props.autoUrl)
 
 function onInput(e) {
-  emit('update:url', e.target.value.trim())
+  emit('update:url', proxyRobotUrl(e.target.value))
 }
 </script>
 

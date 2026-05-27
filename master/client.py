@@ -112,13 +112,14 @@ class RobotSDK:
         self.last_velocity = {"linear": 0.0, "angular": 0.0, "at": None}
         self.last_preset = {"name": "", "motion_id": None, "area_id": None, "at": None}
 
-    def set_velocity(self, linear: float, angular: float):
+    def set_velocity(self, linear: float, angular: float, lateral: float = 0.0):
         self.last_velocity = {
             "linear": float(linear),
+            "lateral": float(lateral),
             "angular": float(angular),
             "at": time.time(),
         }
-        print(f"[MASTER SDK] set_velocity linear={linear} angular={angular}")
+        print(f"[MASTER SDK] set_velocity linear={linear} lateral={lateral} angular={angular}")
 
     def run_preset(
         self,
@@ -155,6 +156,7 @@ class RobotSDK:
             },
             "motion": {
                 "linear": self.last_velocity.get("linear", 0.0),
+                "lateral": self.last_velocity.get("lateral", 0.0),
                 "angular": self.last_velocity.get("angular", 0.0),
                 "last_preset": self.last_preset.get("name") or "",
                 "last_motion_id": self.last_preset.get("motion_id"),

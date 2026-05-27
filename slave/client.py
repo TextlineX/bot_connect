@@ -20,6 +20,8 @@ from role_config import save_role_config
 from runtime import build_runtime
 from stream_info import build_stream_urls
 from action_presets import canonical_action, resolve_preset
+from motion_controller import MotionController
+from motion_presets import resolve_motion_command, resolve_motion_preset_name
 
 ROLE_STATE, config_provider, on_config_sync = build_runtime(
     "slave",
@@ -42,16 +44,9 @@ START_TS = time.time()
 MEDIAMTX_PROC = None
 RELAY_PROC = None
 MJPEG_PROCS: list[subprocess.Popen] = []
+MJPEG_LOGS = []
 STREAM_MODE = os.getenv("STREAM_MODE", "rtsp").lower()  # rtsp | http_mjpeg
 STREAM_PRESETS: list[dict] = []
-
-try:
-    import rclpy  # type: ignore
-    from geometry_msgs.msg import Twist  # type: ignore
-
-    RCLPY_READY = True
-except Exception:
-    RCLPY_READY = False
 
 try:
     from tts_client import send_tts as ros_send_tts  # type: ignore
@@ -85,11 +80,17 @@ def stop_stream_stack():
     MEDIAMTX_PROC = None
     RELAY_PROC = None
     MJPEG_PROCS = []
+    for f in list(MJPEG_LOGS):
+        try:
+            f.close()
+        except Exception:
+            pass
+    MJPEG_LOGS.clear()
 
 
 def start_stream_stack():
     """自动拉起推流栈，默认开启，缺依赖会自动跳过。"""
-    global MEDIAMTX_PROC, RELAY_PROC, MJPEG_PROCS, STREAM_PRESETS
+    global MEDIAMTX_PROC, RELAY_PROC, MJPEG_PROCS, STREAM_PRESETS, MJPEG_LOGS
     if os.getenv("STREAM_AUTOSTART", "1").lower() not in {"1", "true", "yes"}:
         return
 
@@ -107,6 +108,11 @@ def start_stream_stack():
             ]
         STREAM_PRESETS = []
         port = base_port
+        log_dir = ROOT / "runs" / "stream_logs"
+        try:
+            log_dir.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            log_dir = None
         for topic in topics:
             cmd = [
                 sys.executable,
@@ -119,10 +125,23 @@ def start_stream_stack():
                 str(port),
             ]
             try:
-                proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                log_f = None
+                if log_dir:
+                    safe_topic = "".join(c if (c.isalnum() or c in ("-", "_")) else "_" for c in str(topic).strip())
+                    safe_topic = safe_topic.strip("_") or "topic"
+                    log_path = log_dir / f"mjpeg_{port}_{safe_topic}.log"
+                    log_f = open(log_path, "ab")
+                    MJPEG_LOGS.append(log_f)
+                proc = subprocess.Popen(
+                    cmd,
+                    stdout=(log_f if log_f else subprocess.DEVNULL),
+                    stderr=(subprocess.STDOUT if log_f else subprocess.DEVNULL),
+                )
                 MJPEG_PROCS.append(proc)
                 url = f"http://{host}:{port}/stream.mjpg"
-                STREAM_PRESETS.append({"topic": topic, "url": url, "label": topic.split("/")[-2] if "/" in topic else topic})
+                parts = [p for p in str(topic).split("/") if p]
+                label = parts[-3] if len(parts) >= 3 else (parts[-1] if parts else str(topic))
+                STREAM_PRESETS.append({"topic": topic, "url": url, "label": label})
                 print(f"[STREAM] mjpeg started: {topic} -> {url}")
             except Exception as exc:
                 print(f"[STREAM] mjpeg start failed ({topic}): {exc}")
@@ -183,45 +202,46 @@ def start_stream_stack():
 
 
 def register_cleanup():
-    atexit.register(stop_stream_stack)
-    signal.signal(signal.SIGTERM, lambda *_: (stop_stream_stack(), sys.exit(0)))
-    signal.signal(signal.SIGINT, lambda *_: (stop_stream_stack(), sys.exit(0)))
+    def _cleanup():
+        try:
+            stop_stream_stack()
+        except Exception:
+            pass
+        try:
+            sdk.close()
+        except Exception:
+            pass
+
+    atexit.register(_cleanup)
+    signal.signal(signal.SIGTERM, lambda *_: (_cleanup(), sys.exit(0)))
+    signal.signal(signal.SIGINT, lambda *_: (_cleanup(), sys.exit(0)))
 
 
 class RobotSDK:
     def __init__(self):
-        self.last_velocity = {"linear": 0.0, "angular": 0.0, "at": None}
-        self.node = None
-        self.cmd_pub = None
-        if RCLPY_READY and not SIM_MODE:
-            try:
-                rclpy.init(args=None)
-                from rclpy.node import Node  # type: ignore
+        self.motion = MotionController(ROBOT_ID, sim_mode=SIM_MODE)
+        self.motion.start()
+        self.last_velocity = {"linear": 0.0, "lateral": 0.0, "angular": 0.0, "at": None}
 
-                class _Node(Node):
-                    pass
+    def close(self):
+        try:
+            self.motion.close()
+        except Exception:
+            pass
 
-                self.node = _Node("slave_cmd_bridge")
-                self.cmd_pub = self.node.create_publisher(Twist, "/cmd_vel", 10)
-                print("[SLAVE SDK] ROS cmd_vel publisher ready")
-            except Exception as exc:
-                print(f"[SLAVE SDK] ROS init failed: {exc}")
-                self.node = None
-                self.cmd_pub = None
+    def set_velocity(self, linear: float, angular: float, lateral: float = 0.0, duration: float | None = None, label: str | None = None):
+        self.last_velocity = {
+            "linear": float(linear),
+            "lateral": float(lateral),
+            "angular": float(angular),
+            "at": time.time(),
+        }
+        self.motion.command(float(linear), float(angular), float(lateral), duration=duration, label=label)
 
-    def set_velocity(self, linear: float, angular: float):
-        self.last_velocity = {"linear": float(linear), "angular": float(angular), "at": time.time()}
-        if self.cmd_pub:
-            try:
-                msg = Twist()
-                msg.linear.x = float(linear)
-                msg.angular.z = float(angular)
-                self.cmd_pub.publish(msg)
-                print(f"[SLAVE SDK] publish cmd_vel linear={linear} angular={angular}")
-            except Exception as exc:
-                print(f"[SLAVE SDK] publish cmd_vel failed: {exc}")
-        else:
-            print(f"[SLAVE SDK] set_velocity (sim) linear={linear} angular={angular}")
+    def run_script(self, script: list[dict], label: str | None = None):
+        # 脚本执行期间，last_velocity 仅反映最后一次外部下发（用于可视化），实时速度以 controller.status 为准
+        self.last_velocity = {"linear": 0.0, "lateral": 0.0, "angular": 0.0, "at": time.time()}
+        self.motion.run_script(script, label=label)
 
     def status(self):
         now = time.time()
@@ -248,8 +268,10 @@ class RobotSDK:
             },
             "motion": {
                 "linear": self.last_velocity.get("linear", 0.0),
+                "lateral": self.last_velocity.get("lateral", 0.0),
                 "angular": self.last_velocity.get("angular", 0.0),
                 "last_command_age_sec": round(now - last_move_at, 1) if last_move_at else None,
+                "controller": self.motion.status(),
             },
             "audio": {
                 "tts_ready": bool(ros_send_tts),
@@ -273,7 +295,7 @@ sdk = RobotSDK()
 
 def on_cmd(data):
     payload = data.get("payload", {})
-    sdk.set_velocity(payload.get("linear", 0), payload.get("angular", 0))
+    sdk.set_velocity(payload.get("linear", 0), payload.get("angular", 0), payload.get("lateral", 0))
     return {
         "ok": True,
         "detail": "cmd_vel handled",
@@ -314,24 +336,66 @@ def on_exec(data):
         result.update({"module": "slave", "action": "voice.tts", "text": text})
         return result
 
-    if action == "motion.move":
-        sdk.set_velocity(payload.get("linear", 0), payload.get("angular", 0))
+    if action in {"motion.move", "motion.macro", "motion.preset"}:
+        if sdk.motion.is_estopped():
+            return {
+                "ok": False,
+                "detail": "motion rejected: estop active",
+                "module": "slave",
+                "action": "motion.move",
+                "payload": payload,
+            }
+        preset_from_action = resolve_motion_preset_name(raw_action)
+        if preset_from_action and not any(k in payload for k in ("motion_preset", "preset", "macro", "pattern")):
+            payload = {**payload, "preset": preset_from_action}
+        cmd = resolve_motion_command(payload)
+        if cmd.get("script"):
+            sdk.run_script(cmd["script"], label=cmd.get("label") or cmd.get("preset"))
+        else:
+            sdk.set_velocity(
+                cmd.get("linear", 0.0),
+                cmd.get("angular", 0.0),
+                cmd.get("lateral", 0.0),
+                duration=cmd.get("duration"),
+                label=cmd.get("label") or cmd.get("preset"),
+            )
         return {
             "ok": True,
-            "detail": "motion move ok",
+            "detail": "motion move ok" + (f" | {cmd.get('label')}" if cmd.get("label") else ""),
             "module": "slave",
             "action": "motion.move",
-            "payload": payload,
+            "payload": {**payload, **{k: v for k, v in cmd.items() if v is not None}},
+        }
+
+    if action == "motion.estop":
+        reason = payload.get("reason") or payload.get("detail") or ""
+        sdk.motion.estop(reason=str(reason))
+        return {
+            "ok": True,
+            "detail": "motion estop ok",
+            "module": "slave",
+            "action": "motion.estop",
+            "payload": {"reason": str(reason)},
+        }
+
+    if action in {"motion.clear_estop", "motion.estop_clear"}:
+        sdk.motion.clear_estop()
+        return {
+            "ok": True,
+            "detail": "motion clear estop ok",
+            "module": "slave",
+            "action": "motion.clear_estop",
+            "payload": {},
         }
 
     if action == "motion.stop":
-        sdk.set_velocity(0, 0)
+        sdk.set_velocity(0, 0, 0, duration=None, label="stop")
         return {
             "ok": True,
             "detail": "motion stop ok",
             "module": "slave",
             "action": "motion.stop",
-            "payload": {"linear": 0, "angular": 0},
+            "payload": {"linear": 0, "lateral": 0, "angular": 0},
         }
 
     if action == "preset.run":

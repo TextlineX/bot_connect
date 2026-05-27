@@ -13,6 +13,12 @@
           </button>
         </div>
         <div class="group">
+          <div class="group-title">微动预设</div>
+          <button class="btn dark small" v-for="a in macroActions" :key="a.label" @click="sendAction(a)">
+            {{ a.label }}
+          </button>
+        </div>
+        <div class="group">
           <div class="group-title">官方预设</div>
           <button class="btn dark small" v-for="a in presetActions" :key="a.label" @click="sendAction(a)">
             {{ a.label }}
@@ -57,6 +63,24 @@ const moveActions = [
   { label: '左转', payload: { linear: 0, angular: 0.3 } },
   { label: '右转', payload: { linear: 0, angular: -0.3 } },
   { label: '停止', payload: { action: 'motion.stop' } },
+  { label: '急停', payload: { action: 'motion.estop' } },
+  { label: '解除急停', payload: { action: 'motion.clear_estop' } },
+]
+
+// 自定义移动预设（由 slave 侧解析 preset/macro 字段执行定时移动）
+const macroActions = [
+  { label: '快走一步', payload: { action: 'motion.move', preset: 'step_fast' } },
+  { label: '走一步', payload: { action: 'motion.move', preset: 'step' } },
+  { label: '半步', payload: { action: 'motion.move', preset: 'half_step' } },
+  { label: '走两步', payload: { action: 'motion.move', preset: 'step', repeat: 2 } },
+  { label: '后退一步', payload: { action: 'motion.move', preset: 'step_back' } },
+  { label: '后退半步', payload: { action: 'motion.move', preset: 'half_step_back' } },
+  { label: '左移一步', payload: { action: 'motion.move', preset: 'strafe_left_step' } },
+  { label: '右移一步', payload: { action: 'motion.move', preset: 'strafe_right_step' } },
+  { label: '左转15°', payload: { action: 'motion.move', preset: 'turn_left_15' } },
+  { label: '右转15°', payload: { action: 'motion.move', preset: 'turn_right_15' } },
+  { label: '左转90°', payload: { action: 'motion.move', preset: 'turn_left_90' } },
+  { label: '右转90°', payload: { action: 'motion.move', preset: 'turn_right_90' } },
 ]
 
 // 官方/项目预设动作映射（含左右区分）

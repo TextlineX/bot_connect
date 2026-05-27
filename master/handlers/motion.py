@@ -20,8 +20,8 @@ class MotionModule(MasterModule):
     def status(self) -> dict:
         return {"cmd_vel_available": True}
 
-    async def execute_move(self, linear: float, angular: float) -> dict:
-        self.context.sdk.set_velocity(linear, angular)
+    async def execute_move(self, linear: float, angular: float, lateral: float = 0.0) -> dict:
+        self.context.sdk.set_velocity(linear, angular, lateral=lateral)
         return {
             "ok": True,
             "detail": "motion move ok",
@@ -29,12 +29,13 @@ class MotionModule(MasterModule):
             "action": "motion.move",
             "payload": {
                 "linear": linear,
+                "lateral": lateral,
                 "angular": angular,
             },
         }
 
     async def execute_stop(self) -> dict:
-        self.context.sdk.set_velocity(0, 0)
+        self.context.sdk.set_velocity(0, 0, lateral=0)
         return {
             "ok": True,
             "detail": "motion stop ok",
@@ -42,6 +43,7 @@ class MotionModule(MasterModule):
             "action": "motion.stop",
             "payload": {
                 "linear": 0,
+                "lateral": 0,
                 "angular": 0,
             },
         }
@@ -51,7 +53,11 @@ class MotionModule(MasterModule):
             return False
 
         payload = data.get("payload", {})
-        result = await self.execute_move(payload.get("linear", 0), payload.get("angular", 0))
+        result = await self.execute_move(
+            payload.get("linear", 0),
+            payload.get("angular", 0),
+            payload.get("lateral", 0),
+        )
         reply = {
             "type": "result",
             "robot_id": self.context.robot_id,

@@ -7,6 +7,8 @@
 // 生产建议：前置 NGINX/Caddy 做 TLS 反代；或直接用 Cloudflare Tunnel。
 
 require('dotenv').config();
+const http = require('http');
+const https = require('https');
 const WebSocket = require('ws');
 const fs = require('fs');
 const path = require('path');
@@ -16,7 +18,24 @@ const HOST = process.env.WS_HOST || '0.0.0.0';
 const PORT = Number(process.env.WS_PORT || 8765);
 const AUTH_TOKEN = process.env.AUTH_TOKEN || '';
 const PING_INTERVAL = 20000; // ms
-const CONFIG_PATH = path.join(__dirname, 'config.json');
+const DEFAULT_ROBOT_HOST = '192.168.88.88';
+const MAX_PROXY_CONNECTIONS = Number(process.env.MAX_PROXY_CONNECTIONS || 20);
+let activeProxyConnections = 0;
+
+// Electron 打包场景：backend 代码可能在只读目录（如 resources/ 或 asar 外），
+// 需要把 config/uploads 等可写数据放到用户数据目录。
+const DATA_DIR = process.env.BOT_CONNECT_DATA_DIR
+  ? path.resolve(process.env.BOT_CONNECT_DATA_DIR)
+  : __dirname;
+
+const CONFIG_PATH = path.join(DATA_DIR, 'config.json');
+const uploadDir = path.join(DATA_DIR, 'uploads');
+if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
+
+// 可选：由 Electron/部署脚本指定前端构建产物目录（用于 HTTP 静态托管）
+const FRONTEND_DIST = process.env.BOT_CONNECT_FRONTEND_DIST
+  ? path.resolve(process.env.BOT_CONNECT_FRONTEND_DIST)
+  : path.join(__dirname, '..', 'frontend', 'dist');
 const DEFAULT_FEATURE_FLAGS = {
   showControl: true,
   showTTS: true,
@@ -60,6 +79,10 @@ function defaultConfig() {
   return {
     version: 1,
     updated_at: new Date().toISOString(),
+    network: {
+      // 机器人热点模式下，运控/开发计算单元默认 IP
+      robot_host: DEFAULT_ROBOT_HOST,
+    },
     frontend: {
       controller_robot_id: 'controller',
       role: 'controller',
@@ -122,6 +145,18 @@ function loadConfig() {
     const raw = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf-8'));
     return normalizeConfig(raw);
   } catch {
+    // Electron 打包：优先使用用户可写目录；若首次启动可用内置 config.json 做种子
+    try {
+      const fallbackPath = path.join(__dirname, 'config.json');
+      if (DATA_DIR !== __dirname && fs.existsSync(fallbackPath)) {
+        const raw = JSON.parse(fs.readFileSync(fallbackPath, 'utf-8'));
+        const next = normalizeConfig(raw);
+        saveConfig(next);
+        return next;
+      }
+    } catch {
+      // ignore
+    }
     return defaultConfig();
   }
 }
@@ -148,10 +183,174 @@ function backendConfig() {
 
 let config = loadConfig();
 
+function robotHost() {
+  const fromEnv = (process.env.ROBOT_HOST || '').trim();
+  if (fromEnv) return fromEnv;
+  const fromCfg = (config?.network?.robot_host || '').trim();
+  return fromCfg || DEFAULT_ROBOT_HOST;
+}
+
+function isHopByHopHeader(key = '') {
+  const k = String(key || '').toLowerCase();
+  return [
+    'connection',
+    'keep-alive',
+    'proxy-authenticate',
+    'proxy-authorization',
+    'te',
+    'trailers',
+    'transfer-encoding',
+    'upgrade',
+  ].includes(k);
+}
+
+function writeJson(res, code, payload) {
+  res.writeHead(code, { 'Content-Type': 'application/json; charset=utf-8' });
+  res.end(JSON.stringify(payload));
+}
+
+function startProxyGuard(res) {
+  if (activeProxyConnections >= MAX_PROXY_CONNECTIONS) {
+    writeJson(res, 429, { ok: false, error: 'too many proxy connections' });
+    return false;
+  }
+  activeProxyConnections += 1;
+  const cleanup = () => {
+    if (cleanup._done) return;
+    cleanup._done = true;
+    activeProxyConnections = Math.max(0, activeProxyConnections - 1);
+  };
+  res.on('close', cleanup);
+  res.on('finish', cleanup);
+  return true;
+}
+
+function proxyToTarget(req, res, target) {
+  const allowedHost = robotHost();
+  const proto = target.protocol || '';
+  if (proto !== 'http:' && proto !== 'https:') {
+    writeJson(res, 400, { ok: false, error: 'only http/https allowed' });
+    return true;
+  }
+  if (target.hostname !== allowedHost) {
+    writeJson(res, 403, { ok: false, error: `host not allowed (allowed=${allowedHost})` });
+    return true;
+  }
+
+  if (!startProxyGuard(res)) return true;
+
+  const client = proto === 'https:' ? https : http;
+  const reqHeaders = { ...(req.headers || {}) };
+  delete reqHeaders['accept-encoding'];
+  delete reqHeaders['host'];
+
+  const proxyReq = client.request(
+    {
+      method: req.method,
+      hostname: target.hostname,
+      port: target.port || (proto === 'https:' ? 443 : 80),
+      path: `${target.pathname || '/'}${target.search || ''}`,
+      headers: reqHeaders,
+      timeout: 15000,
+    },
+    (proxyRes) => {
+      const headers = {};
+      Object.entries(proxyRes.headers || {}).forEach(([k, v]) => {
+        if (!k || isHopByHopHeader(k)) return;
+        headers[k] = v;
+      });
+      headers['Access-Control-Allow-Origin'] = '*';
+      headers['X-Bot-Connect-Proxy'] = 'robot';
+      res.writeHead(proxyRes.statusCode || 502, headers);
+      proxyRes.pipe(res);
+    }
+  );
+
+  proxyReq.on('timeout', () => {
+    try { proxyReq.destroy(new Error('timeout')); } catch {}
+  });
+  proxyReq.on('error', (e) => {
+    const msg = (e && e.message) ? e.message : 'proxy error';
+    if (!res.headersSent) writeJson(res, 502, { ok: false, error: msg });
+    else {
+      try { res.end(); } catch {}
+    }
+  });
+
+  req.pipe(proxyReq);
+  return true;
+}
+
+function handleRobotProxy(req, res, parsedRequestUrl) {
+  // 形态：/proxy/robot?url=http%3A%2F%2F192.168.88.88%3A8000%2Fstream.mjpg
+  if (parsedRequestUrl.pathname !== '/proxy/robot') return false;
+
+  // CORS 预检（即便同源也没坏处）
+  if ((req.method || '').toUpperCase() === 'OPTIONS') {
+    res.writeHead(204, {
+      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Methods': 'GET,POST,PUT,PATCH,DELETE,HEAD,OPTIONS',
+      'Access-Control-Allow-Headers': '*',
+      'Access-Control-Max-Age': '86400',
+    });
+    res.end();
+    return true;
+  }
+
+  const rawUrl = parsedRequestUrl.searchParams.get('url') || '';
+  if (!rawUrl) {
+    writeJson(res, 400, { ok: false, error: 'missing url' });
+    return true;
+  }
+
+  let target = null;
+  try {
+    target = new URL(rawUrl);
+  } catch {
+    writeJson(res, 400, { ok: false, error: 'invalid url' });
+    return true;
+  }
+
+  return proxyToTarget(req, res, target);
+}
+
+function handleRobotProxyMjpg(req, res, parsedRequestUrl) {
+  // 更安全的形态：/proxy/robot/mjpg?port=8000&path=/stream.mjpg
+  if (parsedRequestUrl.pathname !== '/proxy/robot/mjpg') return false;
+
+  if ((req.method || '').toUpperCase() === 'OPTIONS') {
+    res.writeHead(204, {
+      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Methods': 'GET,POST,PUT,PATCH,DELETE,HEAD,OPTIONS',
+      'Access-Control-Allow-Headers': '*',
+      'Access-Control-Max-Age': '86400',
+    });
+    res.end();
+    return true;
+  }
+
+  const port = Number(parsedRequestUrl.searchParams.get('port') || 8000);
+  let pathname = parsedRequestUrl.searchParams.get('path') || '';
+  pathname = String(pathname || '').trim();
+  if (!pathname) {
+    writeJson(res, 400, { ok: false, error: 'missing path' });
+    return true;
+  }
+  if (!pathname.startsWith('/')) pathname = '/' + pathname;
+  const host = robotHost();
+  const rawUrl = `http://${host}:${port}${pathname}`;
+  let target = null;
+  try {
+    target = new URL(rawUrl);
+  } catch {
+    writeJson(res, 400, { ok: false, error: 'invalid path' });
+    return true;
+  }
+  return proxyToTarget(req, res, target);
+}
+
 // robot_id -> ws
 const clients = new Map();
-const uploadDir = path.join(__dirname, 'uploads');
-if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
 // 缓存音频分片：robot_id -> {chunks:Buffer[], bytes:number, mime:string, ts:number, timer:Timeout, target:string, session:any, seq:any}
 const pendingAudio = new Map();
 const pythonBin = process.env.PYTHON_BIN || 'python';
@@ -454,8 +653,79 @@ function route(fromRid, data) {
   }
 }
 
-const wss = new WebSocket.Server({ host: HOST, port: PORT });
-log(`WebSocket server on ws://${HOST}:${PORT}`);
+function guessContentType(filePath) {
+  const ext = path.extname(filePath || '').toLowerCase();
+  return {
+    '.html': 'text/html; charset=utf-8',
+    '.js': 'application/javascript; charset=utf-8',
+    '.css': 'text/css; charset=utf-8',
+    '.json': 'application/json; charset=utf-8',
+    '.svg': 'image/svg+xml',
+    '.png': 'image/png',
+    '.jpg': 'image/jpeg',
+    '.jpeg': 'image/jpeg',
+    '.webm': 'video/webm',
+    '.mp4': 'video/mp4',
+    '.ico': 'image/x-icon',
+  }[ext] || 'application/octet-stream';
+}
+
+function serveFrontend(req, res) {
+  try {
+    const u = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
+    let pathname = decodeURIComponent(u.pathname || '/');
+
+    // 机器人热点侧资源代理：让“其它设备只连正常网”也能看机器人视频/拉取资源
+    if (pathname === '/proxy/robot') {
+      if (handleRobotProxy(req, res, u)) return;
+    }
+    if (pathname === '/proxy/robot/mjpg') {
+      if (handleRobotProxyMjpg(req, res, u)) return;
+    }
+
+    if (pathname === '/health') {
+      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({ ok: true, ts: Date.now() }));
+      return;
+    }
+
+    if (!FRONTEND_DIST || !fs.existsSync(FRONTEND_DIST)) {
+      res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
+      res.end('Bot Connect backend is running.\nfrontend dist not found.\n');
+      return;
+    }
+
+    if (pathname === '/' || pathname === '') pathname = '/index.html';
+
+    // 防止目录穿越：只允许 dist 下的文件
+    const abs = path.resolve(FRONTEND_DIST, '.' + pathname);
+    const distAbs = path.resolve(FRONTEND_DIST);
+    if (!abs.startsWith(distAbs)) {
+      res.writeHead(403, { 'Content-Type': 'text/plain; charset=utf-8' });
+      res.end('Forbidden');
+      return;
+    }
+
+    // SPA：非文件请求回退 index.html
+    let target = abs;
+    if (!fs.existsSync(target) || fs.statSync(target).isDirectory()) {
+      target = path.join(FRONTEND_DIST, 'index.html');
+    }
+
+    const buf = fs.readFileSync(target);
+    res.writeHead(200, { 'Content-Type': guessContentType(target) });
+    res.end(buf);
+  } catch (e) {
+    res.writeHead(500, { 'Content-Type': 'text/plain; charset=utf-8' });
+    res.end('Internal Server Error');
+  }
+}
+
+const server = http.createServer(serveFrontend);
+const wss = new WebSocket.Server({ server });
+server.listen(PORT, HOST, () => {
+  log(`HTTP+WebSocket server on http://${HOST}:${PORT} (ws on same port)`);
+});
 
 function handleAudioUpload(fromRid, data) {
   try {
@@ -731,5 +1001,5 @@ wss.on('connection', (ws) => {
   }, PING_INTERVAL);
 });
 
-process.on('SIGINT', () => { log('SIGINT, close'); wss.close(); process.exit(0); });
-process.on('SIGTERM', () => { log('SIGTERM, close'); wss.close(); process.exit(0); });
+process.on('SIGINT', () => { log('SIGINT, close'); try { server.close(); } catch {} wss.close(); process.exit(0); });
+process.on('SIGTERM', () => { log('SIGTERM, close'); try { server.close(); } catch {} wss.close(); process.exit(0); });
