@@ -16,14 +16,14 @@ jobs:
       EXPO_PUBLIC_API_URL: "http://192.168.31.57:3050"
     steps:
       - name: Checkout current official Rakazo source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           repository: elie222/rakazo
-          ref: main
+          ref: e2fccaafde6034630fdfd1a47122f73fd807ac32
           path: rakazo
           persist-credentials: false
       - name: Set up Node 24
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: "24"
       - name: Set up pnpm
@@ -31,7 +31,7 @@ jobs:
         with:
           version: "9.15.0"
       - name: Set up JDK 17
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: "17"
@@ -47,6 +47,8 @@ jobs:
           echo "SDK root: $SDK_ROOT"
           ls "$SDK_ROOT/platforms"
           ls "$SDK_ROOT/build-tools"
+      - name: Configure Gradle caching
+        uses: gradle/actions/setup-gradle@v4
       - name: Install Rakazo dependencies
         working-directory: rakazo
         run: pnpm install --frozen-lockfile
@@ -77,7 +79,10 @@ jobs:
         working-directory: rakazo/apps/mobile/android
         run: |
           chmod +x gradlew
-          ./gradlew :app:assembleRelease --no-daemon --stacktrace
+          echo 'org.gradle.jvmargs=-Xmx3g -XX:MaxMetaspaceSize=1g -Dfile.encoding=UTF-8' >> gradle.properties
+          echo 'org.gradle.workers.max=2' >> gradle.properties
+          echo 'org.gradle.parallel=false' >> gradle.properties
+          ./gradlew :app:assembleRelease --no-daemon --max-workers=2 --no-parallel --stacktrace
       - name: Verify signing and prepare test APK
         run: |
           set -euo pipefail
