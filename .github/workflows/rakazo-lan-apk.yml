@@ -1,0 +1,97 @@
+name: Build Rakazo LAN test APK
+on:
+  push:
+    branches:
+      - rakazo-lan-apk-build
+permissions:
+  contents: read
+jobs:
+  android:
+    name: Android standalone APK with LAN HTTP
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      CI: "1"
+      EXPO_NO_GIT_STATUS: "1"
+      EXPO_PUBLIC_API_URL: "http://192.168.31.57:3050"
+    steps:
+      - name: Checkout current official Rakazo source
+        uses: actions/checkout@v4
+        with:
+          repository: elie222/rakazo
+          ref: main
+          path: rakazo
+          persist-credentials: false
+      - name: Set up Node 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: "9.15.0"
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+      - name: Install Rakazo dependencies
+        working-directory: rakazo
+        run: pnpm install --frozen-lockfile
+      - name: Make an isolated LAN test edition
+        working-directory: rakazo
+        run: |
+          node <<'JS'
+          const fs = require("node:fs");
+          const path = "apps/mobile/app.json";
+          const cfg = JSON.parse(fs.readFileSync(path, "utf8"));
+          cfg.expo.name = "Rakazo LAN Test";
+          cfg.expo.android.package = "com.rakazo.app.lantest";
+          cfg.expo.android.versionCode = 1;
+          cfg.expo.updates = { enabled: false };
+          fs.writeFileSync(path, JSON.stringify(cfg, null, 2) + "\n");
+          JS
+      - name: Generate native Android project
+        working-directory: rakazo
+        run: pnpm --filter @rakazo/mobile exec expo prebuild --platform android --clean --no-install
+      - name: Require LAN cleartext permission
+        working-directory: rakazo
+        run: |
+          manifest="apps/mobile/android/app/src/main/AndroidManifest.xml"
+          test -f "$manifest"
+          grep -q 'android:usesCleartextTraffic="true"' "$manifest"
+          grep 'usesCleartextTraffic' "$manifest"
+      - name: Build standalone release APK
+        working-directory: rakazo/apps/mobile/android
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:assembleRelease --no-daemon --stacktrace
+      - name: Verify signing and prepare test APK
+        run: |
+          set -euo pipefail
+          apk="$(find rakazo/apps/mobile/android/app/build/outputs/apk/release -name '*.apk' -type f | head -n 1)"
+          test -n "$apk"
+          signer="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -n 1)"
+          aligner="$(find "$ANDROID_HOME/build-tools" -type f -name zipalign | sort -V | tail -n 1)"
+          test -x "$signer"
+          if "$signer" verify "$apk" >/dev/null 2>&1; then
+            cp "$apk" rakazo-lan-test.apk
+          else
+            test -x "$aligner"
+            keytool -genkeypair -alias rakazo-lan -keystore /tmp/rakazo-lan.keystore -storetype PKCS12 -storepass AndroidTestOnly123 -keypass AndroidTestOnly123 -keyalg RSA -keysize 2048 -validity 365 -dname "CN=Rakazo LAN Test" -noprompt
+            "$aligner" -f 4 "$apk" /tmp/rakazo-lan-aligned.apk
+            "$signer" sign --ks /tmp/rakazo-lan.keystore --ks-pass pass:AndroidTestOnly123 --key-pass pass:AndroidTestOnly123 --out rakazo-lan-test.apk /tmp/rakazo-lan-aligned.apk
+          fi
+          "$signer" verify --verbose rakazo-lan-test.apk
+          unzip -t rakazo-lan-test.apk | tail -n 1
+          ls -lh rakazo-lan-test.apk
+      - name: Upload installable APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: rakazo-lan-test-apk
+          path: rakazo-lan-test.apk
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
