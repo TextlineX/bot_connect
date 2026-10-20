@@ -3,6 +3,8 @@ on:
   push:
     branches:
       - rakazo-lan-apk-build
+      - copilot/**
+  workflow_dispatch:
 permissions:
   contents: read
 jobs:
@@ -75,6 +77,9 @@ jobs:
           test -f "$manifest"
           grep -q 'android:usesCleartextTraffic="true"' "$manifest"
           grep 'usesCleartextTraffic' "$manifest"
+      - name: Verify Expo Android autolinking
+        working-directory: rakazo/apps/mobile
+        run: node --no-warnings --eval "require('expo/bin/autolinking')" expo-modules-autolinking resolve --platform android --json
       - name: Build standalone release APK
         working-directory: rakazo/apps/mobile/android
         run: |
